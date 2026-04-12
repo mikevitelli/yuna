@@ -27,6 +27,7 @@ yuna reset                → clear conversation history
 ```
 yuna/
 ├── package.json              # npm: "yuna-bot", bin: { "yuna": "./bin/yuna.js" }
+├── tsconfig.json             # TypeScript strict mode
 ├── bin/yuna.js               # shim → dist/cli/index.js
 ├── src/
 │   ├── cli/
@@ -48,8 +49,33 @@ yuna/
 │   │   └── protocol.ts       # wire protocol types
 │   └── shared/
 │       └── types.ts          # DeviceConfig, WireCommand, etc.
-└── server/                   # Next.js Vercel app (deployed by user)
-    └── (same structure as current, refactored for dynamic devices)
+└── server/                   # Next.js 15 Vercel app (deployed by user)
+    ├── package.json          # @anthropic-ai/sdk, @upstash/redis, next
+    ├── tsconfig.json
+    ├── next.config.js
+    └── src/
+        ├── app/
+        │   ├── page.tsx
+        │   ├── layout.tsx
+        │   └── api/
+        │       ├── health/route.ts
+        │       ├── devices/route.ts
+        │       ├── relay/
+        │       │   ├── poll/route.ts
+        │       │   ├── respond/route.ts
+        │       │   └── register/route.ts
+        │       └── telegram/
+        │           ├── webhook/route.ts
+        │           └── setup/route.ts
+        └── lib/
+            ├── auth.ts
+            ├── devices.ts
+            ├── orchestrator.ts
+            ├── rate-limit.ts
+            ├── redis.ts
+            ├── system-prompt.ts
+            ├── telegram.ts
+            └── tools.ts
 ```
 
 ## Security: Per-device tokens
@@ -87,10 +113,17 @@ yuna:devices                → SET of device names
 yuna:device:{name}          → HASH { os, description, capabilities, registeredAt }
 yuna:token:{token}          → STRING { device, registeredAt }
 yuna:lastseen:{name}        → STRING (ISO timestamp)
-yuna:stream:{name}          → STREAM (command queue)
+yuna:stream:{name}          → STREAM (command queue, consumer group: "agent")
 yuna:conversation:messages  → STRING (shared conversation JSON)
 yuna:orchestration:{taskId} → STRING (in-flight task JSON)
 ```
+
+### Redis Streams protocol
+Each device stream (`yuna:stream:{name}`) uses a consumer group named `"agent"` with a single consumer per device.
+- **Server → Device**: `XADD yuna:stream:{name} * command <json>` to enqueue a command
+- **Device → Server**: `XREADGROUP GROUP agent {deviceName} COUNT 1 BLOCK 30000 STREAMS yuna:stream:{name} >` to poll
+- **ACK**: Device calls `XACK yuna:stream:{name} agent {messageId}` after posting result via `/api/relay/respond`
+- Consumer group is created at device registration time (`XGROUP CREATE ... $ MKSTREAM`)
 
 ### Dynamic tool generation
 `buildDeviceTools()` reads device registry, generates:
@@ -103,7 +136,8 @@ yuna:orchestration:{taskId} → STRING (in-flight task JSON)
 
 ## What's copied from shiny-politoed vs written fresh
 
-### Copied unchanged (6 files)
+### Copied from shiny-politoed (6 files, minor adjustments)
+These files contain no hardcoded device logic, but may need import path updates and `sp:` → `yuna:` prefix changes if they reference Redis keys directly.
 - `server/src/lib/rate-limit.ts`
 - `server/src/lib/telegram.ts`
 - `server/src/app/api/health/route.ts`
@@ -137,7 +171,7 @@ yuna:orchestration:{taskId} → STRING (in-flight task JSON)
 4. "Telegram bot token?" → validate via getMe API
 5. "Telegram user ID?" → for owner lock
 6. "Anthropic API key?" → validate format
-7. "Redis setup?" → auto-create via Upstash API or paste URL+token
+7. "Redis URL?" → paste Upstash Redis REST URL + token (no auto-create; user brings their own Redis)
 8. Generate MASTER_SECRET + TELEGRAM_WEBHOOK_SECRET
 9. Deploy to Vercel (or scaffold with `--manual`)
 10. Store hashed MASTER_SECRET in Redis
@@ -158,41 +192,61 @@ yuna:orchestration:{taskId} → STRING (in-flight task JSON)
 9. Write `~/.config/yuna/device.json` (serverUrl + deviceToken + deviceName)
 10. "Device registered. Run `yuna start` to begin listening."
 
-## CLI dependencies
+## Dependencies
+
+### CLI + agent (root package.json)
 - `commander` — subcommands
 - `inquirer` — interactive prompts
 - `chalk` — colored output
 - `ora` — spinners
 
+### Server (server/package.json)
+- `next` — Next.js 15
+- `@anthropic-ai/sdk` — Claude API
+- `@upstash/redis` — Redis REST client
+- `react`, `react-dom` — Next.js peer deps
+
+### Build tooling (devDependencies)
+- `tsup` — bundle CLI + agent to dist/
+- `typescript` — strict mode
+
 ## Implementation phases
 
-### Phase 1: Create repo + server refactoring
-1. `gh repo create mikevitelli/yuna`
-2. Copy server/ files, refactor for dynamic devices
-3. Create `server/src/lib/devices.ts`
-4. Rewrite tools.ts, system-prompt.ts, orchestrator.ts
-5. Add `server/src/app/api/devices/route.ts`
-6. Generic landing page + branding
+### Phase 1: Server scaffolding + refactoring
+Repo already exists (`mikevitelli/yuna`). Build `devices.ts` first — tools, system-prompt, and auth all depend on it.
+1. Scaffold `server/` with `package.json`, `tsconfig.json`, `next.config.js`
+2. Create `server/src/lib/devices.ts` — device registry CRUD (all other server modules depend on this)
+3. Create `server/src/lib/redis.ts` — Redis client + key helpers with `yuna:` prefix
+4. Copy + adjust the 6 portable files from shiny-politoed (update imports, `sp:` → `yuna:` if needed)
+5. Rewrite `auth.ts` (per-device token lookup), `tools.ts` (dynamic generation), `system-prompt.ts` (dynamic sections), `orchestrator.ts` (async tools)
+6. Add `server/src/app/api/devices/route.ts` + `relay/register/route.ts`
+7. Generic landing page + branding (`page.tsx`, `layout.tsx`)
+8. Verify: `cd server && npx tsc --noEmit && npx next build`
 
 ### Phase 2: CLI framework
-7. Root package.json with commander/inquirer/chalk/ora
-8. `src/cli/index.ts` + helpers (config, crypto)
-9. `src/cli/init.ts` — the wizard
-10. `src/cli/add-device.ts`, `status.ts`, `reset.ts`
+9. Root `package.json` (name: `yuna-bot`, bin: `yuna`) + `tsconfig.json`
+10. `src/shared/types.ts` — shared types for CLI, agent, and server
+11. `src/cli/index.ts` + helpers (`config.ts`, `crypto.ts`, `prompts.ts`)
+12. `src/cli/init.ts` — the wizard (no Upstash auto-create; paste URL only)
+13. `src/cli/add-device.ts`, `status.ts`, `reset.ts`
 
 ### Phase 3: Node.js device agent
-11. `src/agent/agent.ts` — polling loop
-12. `src/agent/executor.ts` — command execution
-13. `src/cli/start.ts` — agent launcher
+14. `src/agent/agent.ts` — polling loop with exponential backoff (1s → 2s → 4s → ... → 30s cap), resets on command received
+15. `src/agent/executor.ts` — bash/read_file/write_file execution with timeout + output size limits
+16. `src/cli/start.ts` — agent launcher with graceful shutdown (SIGINT/SIGTERM)
 
 ### Phase 4: Package + publish
-14. tsconfig, build script, bin/yuna.js shim
-15. Test `npx yuna-bot init` end-to-end
-16. README.md for yuna.bot
-17. `npm publish`
+17. `tsup` build config for CLI + agent, `bin/yuna.js` shim
+18. Test `npx yuna-bot init` end-to-end
+19. README.md for yuna.bot
+20. `npm publish`
 
 ## Verification
-1. `gh repo create mikevitelli/yuna --public`
-2. Server: `cd server && npx tsc --noEmit && npx next build`
-3. CLI: `npm run build && node bin/yuna.js --help`
-4. E2E: `npx yuna-bot init` on a fresh machine → deploys, registers webhook, add-device, start, send Telegram message → get response
+1. Server: `cd server && npx tsc --noEmit && npx next build`
+2. CLI: `npm run build && node bin/yuna.js --help`
+3. E2E: `npx yuna-bot init` on a fresh machine → deploys, registers webhook, add-device, start, send Telegram message → get response
+
+## Open questions
+- **shiny-politoed source access**: The 6 "copied" files and 8 "modified" files need to be pulled from the shiny-politoed repo. Verify each for `sp:` prefix references and import paths before copying.
+- **Vercel deploy automation**: `src/cli/helpers/vercel.ts` needs to handle both `vercel` CLI (interactive deploy) and `--manual` mode (output env vars + instructions for manual deploy). Scope TBD.
+- **Node.js version**: `>=18` (for native fetch, required by `@upstash/redis`)
