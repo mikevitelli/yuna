@@ -196,13 +196,104 @@ export async function reclaimPending(
 
 // ─── Conversation helpers ────────────────────────────────────────────────────
 
+// Ensures every assistant `tool_use` block has a matching `tool_result` in
+// the immediately-following user message. The Anthropic API rejects with 400
+// "tool_use ids were found without tool_result blocks" otherwise, and a
+// corrupted conversation will 500 the webhook on every retry from Telegram
+// until it's wiped manually.
+//
+// This happens when the orchestration loop dies between emitting a tool_use
+// and persisting the tool_result — e.g. device offline mid-dispatch, Vercel
+// function timeout, agent crash, or any caught exception that short-circuits
+// the flow without a compensating save. We repair by injecting synthetic
+// tool_result blocks so the conversation stays API-valid and the user's
+// next turn is accepted.
+//
+// Called from both loadConversation (so pre-existing corrupt state self-heals
+// on first read) and saveConversation (so we never persist a corrupt shape in
+// the first place). Safe to call on well-formed history (no-op).
+export function repairConversation(
+  messages: ConversationMessage[]
+): ConversationMessage[] {
+  type Block = {
+    type?: string;
+    id?: unknown;
+    tool_use_id?: unknown;
+  };
+  const isBlock = (b: unknown): b is Block =>
+    typeof b === "object" && b !== null;
+
+  const out: ConversationMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    out.push(msg);
+
+    if (msg.role !== "assistant") continue;
+    if (!Array.isArray(msg.content)) continue;
+
+    const toolUseIds: string[] = [];
+    for (const block of msg.content) {
+      if (!isBlock(block)) continue;
+      if (block.type !== "tool_use") continue;
+      if (typeof block.id === "string" && block.id) toolUseIds.push(block.id);
+    }
+    if (toolUseIds.length === 0) continue;
+
+    const next = messages[i + 1];
+    const nextIsUserArray =
+      next && next.role === "user" && Array.isArray(next.content);
+    const nextContent = nextIsUserArray ? (next.content as unknown[]) : null;
+
+    const presentIds = new Set<string>();
+    if (nextContent) {
+      for (const block of nextContent) {
+        if (!isBlock(block)) continue;
+        if (block.type !== "tool_result") continue;
+        if (typeof block.tool_use_id === "string" && block.tool_use_id) {
+          presentIds.add(block.tool_use_id);
+        }
+      }
+    }
+
+    const missing = toolUseIds.filter((id) => !presentIds.has(id));
+    if (missing.length === 0) continue;
+
+    const syntheticResults = missing.map((id) => ({
+      type: "tool_result",
+      tool_use_id: id,
+      content:
+        '<tool_output exit="1">\n(Orchestrator was interrupted before this command completed. No result was recorded.)\n</tool_output>',
+      is_error: true,
+    }));
+
+    if (nextContent) {
+      // Merge synthetic results into the existing next message, then skip
+      // re-pushing it on the next iteration.
+      out.push({
+        role: "user",
+        content: [...nextContent, ...syntheticResults],
+      });
+      i++;
+    } else {
+      // No following user message (or wrong shape) — insert a new one.
+      out.push({
+        role: "user",
+        content: syntheticResults,
+      });
+    }
+  }
+  return out;
+}
+
 export async function loadConversation(): Promise<ConversationMessage[]> {
   const raw = await redis.get<string>(KEY_CONVERSATION);
   if (!raw) return [];
   try {
-    return typeof raw === "string"
-      ? JSON.parse(raw)
-      : (raw as ConversationMessage[]);
+    const parsed: ConversationMessage[] =
+      typeof raw === "string"
+        ? JSON.parse(raw)
+        : (raw as ConversationMessage[]);
+    return repairConversation(parsed);
   } catch {
     return [];
   }
@@ -211,10 +302,11 @@ export async function loadConversation(): Promise<ConversationMessage[]> {
 export async function saveConversation(
   messages: ConversationMessage[]
 ): Promise<void> {
-  let serialized = JSON.stringify(messages);
-  while (serialized.length > MAX_CONVERSATION_BYTES && messages.length > 4) {
-    messages.splice(2, 2); // drop oldest pair, keep first exchange as anchor
-    serialized = JSON.stringify(messages);
+  const repaired = repairConversation(messages);
+  let serialized = JSON.stringify(repaired);
+  while (serialized.length > MAX_CONVERSATION_BYTES && repaired.length > 4) {
+    repaired.splice(2, 2); // drop oldest pair, keep first exchange as anchor
+    serialized = JSON.stringify(repaired);
   }
   await redis.set(KEY_CONVERSATION, serialized, { ex: 604800 });
 }
