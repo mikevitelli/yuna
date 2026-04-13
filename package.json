@@ -1,0 +1,27 @@
+{
+  "name": "yuna-bot",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "yuna": "./bin/yuna.js" },
+  "files": ["bin/", "dist/", "server/"],
+  "scripts": {
+    "build": "tsup && cd server && npm run build",
+    "build:cli": "tsup",
+    "build:server": "cd server && npm run build",
+    "dev": "cd server && npm run dev",
+    "typecheck": "tsc --noEmit && cd server && npx tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "inquirer": "^12.0.0",
+    "chalk": "^5.4.0",
+    "ora": "^8.2.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "tsup": "^8.4.0",
+    "@types/node": "^22.14.1"
+  },
+  "engines": { "node": ">=18" }
+}
