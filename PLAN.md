@@ -58,24 +58,43 @@ yuna/
 No shared secrets. Each device gets its own token at registration.
 
 **Flow:**
-1. `yuna init` generates a `MASTER_SECRET` (stored in Vercel env + local config)
-2. `yuna add-device` on a new machine:
-   - User provides the master secret (one-time, during setup)
-   - Server generates a unique device token (UUID), stores `yuna:token:{token} → {device, registeredAt}`
+1. `yuna init` generates a `MASTER_SECRET` (stored in Vercel env only — never shared)
+2. Adding devices uses **one-time setup codes**, not the master secret:
+   - On the init machine: `yuna create-code` → generates "ABCD-1234" (stored in Redis, 10min TTL, single-use)
+   - On the new device: `yuna add-device --code ABCD-1234`
+   - Server validates code, generates unique device token (UUID), deletes the code
    - Device stores its token locally in `~/.config/yuna/device.json`
    - Device uses its unique token for all subsequent poll/respond requests
 3. Server validates: `Authorization: Bearer {deviceToken}` → looks up `yuna:token:{token}` → gets device identity
-4. Revoking a device: delete its token from Redis. Other devices unaffected.
-5. `TELEGRAM_OWNER_ID` still locks Telegram to one user
-6. Telegram webhook still verified via `TELEGRAM_WEBHOOK_SECRET` header
+4. Revoking a device: `yuna revoke-device <name>` deletes its token from Redis. Other devices unaffected.
+5. `TELEGRAM_OWNER_ID` locks Telegram to one user
+6. Telegram webhook verified via `TELEGRAM_WEBHOOK_SECRET` header
 
 **Redis keys for auth:**
 ```
-yuna:token:{token}          → STRING { device, registeredAt } (per-device auth)
-yuna:master                 → STRING (hashed master secret, for device registration only)
+yuna:token:{token}          → STRING { device, registeredAt } (per-device auth, no TTL)
+yuna:setup-code:{code}      → STRING { createdAt } (single-use, 10min TTL)
 ```
 
-**No Tailscale required.** Devices make outbound HTTPS to the public Vercel URL. No inbound connections, no port forwarding, no VPN. Works from any network.
+**No Tailscale required** for basic operation. Devices make outbound HTTPS to the public Vercel URL. Works from any network.
+
+**Optional: Device mesh networking (Tailscale/WireGuard/LAN)**
+
+If devices share a private network, Yuna becomes a mesh orchestrator — devices can reach each other directly for file transfers and cross-device commands.
+
+Setup during `yuna add-device`:
+```
+"Can this device SSH to other devices?" → yes/no
+  → "SSH alias for <other-device>:" → e.g. "uconsole-ts", "mac-local"
+  → Stored in device metadata: { ssh: { "uconsole": "uconsole-ts" } }
+```
+
+Additional tools Claude gets when mesh is configured:
+- `transfer_file(from_device, to_device, path, dest_path)` — SCP between devices
+- `run_on_{device}` descriptions include: "Can SSH to: {list of reachable devices}"
+- Claude can chain: "Copy the config from uConsole to Mac" → runs `scp uconsole-ts:/path /dest` on the Mac
+
+This is opt-in. Without mesh, Claude moves data through tool_result text (slower, text-only). With mesh, Claude uses direct SCP/rsync (fast, binary-safe).
 
 ## Key architecture change: Dynamic N devices
 
@@ -85,13 +104,49 @@ yuna:master                 → STRING (hashed master secret, for device registr
 ### Device registry (Redis)
 ```
 yuna:devices                → SET of device names
-yuna:device:{name}          → HASH { os, description, capabilities, registeredAt }
+yuna:device:{name}          → HASH { os, description, capabilities, ssh:{json}, registeredAt }
 yuna:token:{token}          → STRING { device, registeredAt }
+yuna:setup-code:{code}      → STRING { createdAt } (10min TTL, single-use)
 yuna:lastseen:{name}        → STRING (ISO timestamp)
-yuna:stream:{name}          → STREAM (command queue)
+yuna:stream:{name}          → STREAM (per-device command queue, consumer group: "agent")
 yuna:conversation:messages  → STRING (shared conversation JSON)
-yuna:orchestration:{taskId} → STRING (in-flight task JSON)
+yuna:orchestration:{taskId} → STRING (in-flight task JSON, 5min TTL)
+yuna:log                    → LIST (audit log, capped at 1000 entries)
 ```
+
+### Per-device command routing
+Each device gets its own Redis Stream (`yuna:stream:{name}`). The orchestrator XADDs commands to the correct device's stream based on which tool Claude called. No shared stream, no filtering. Consumer group `"agent"` with the device name as consumer. XACK after result posted.
+
+### Offline detection
+`yuna:lastseen:{name}` updated on every poll (SET with 86400s TTL). Device is "online" if `now - lastSeen < 60s`. System prompt includes status. If Claude calls a tool for an offline device, the orchestrator returns an error tool_result immediately — Claude adjusts (tries another device or tells the user).
+
+### Device capability matching
+Device metadata includes `capabilities` array (e.g. `["bash", "systemd", "docker", "node"]`). System prompt lists these per device. Claude reads them and picks the right device. No code-level matching — Claude's judgment based on the prompt.
+
+### Error handling
+- **Command fails** (non-zero exit): exit code + stderr returned as tool_result. Claude sees it and can diagnose/retry.
+- **Command timeout** (device-side): executor kills process after `timeout_seconds`. Returns `"command timed out"` with exit code 124.
+- **Device disconnects mid-task**: orchestration task has 5min TTL. If device never responds, task expires. Next poll from that device gets the stale command via XPENDING reclaim (60s threshold) — it re-executes.
+- **Orchestration task expires**: future watchdog (`/api/cron/stale-tasks`) detects expired tasks and sends "device didn't respond" to Telegram. (Phase 2 feature.)
+- **Claude API error**: catch in orchestrator, send error to Telegram, don't corrupt conversation history.
+- **Redis connection failure**: health endpoint returns error, device agents retry with backoff.
+
+### Audit logging
+Every command execution logged to `yuna:log` (Redis LIST, LPUSH + LTRIM 1000):
+```json
+{
+  "ts": "ISO",
+  "type": "command|response|error",
+  "device": "laptop",
+  "tool": "run_on_laptop",
+  "command": "ls -la",
+  "exitCode": 0,
+  "outputLength": 1234,
+  "taskId": "uuid",
+  "durationMs": 500
+}
+```
+Accessible via `yuna logs` CLI command or `/logs` Telegram command.
 
 ### Dynamic tool generation
 `buildDeviceTools()` reads device registry, generates:
@@ -178,16 +233,40 @@ The `--mcp` flag detects available MCP servers and uses them where possible, fal
 
 ## Add-device flow
 
-1. Load `~/.config/yuna/config.json` (needs serverUrl + masterSecret)
+### On the admin machine (has `~/.config/yuna/config.json`):
+```
+yuna create-code
+→ "Setup code: ABCD-1234 (expires in 10 minutes)"
+```
+
+### On the new device:
+1. `yuna add-device --code ABCD-1234`
 2. "Device name?" → e.g. "laptop", "raspberry-pi"
-3. "OS?" → Linux / macOS / Windows
-4. "Description?" → free-form
-5. POST to `/api/relay/register` with masterSecret + device info
-6. Server validates masterSecret, generates unique device token (UUID)
-7. Server stores device metadata + token in Redis
-8. Server returns device token
+3. "OS?" → auto-detected, confirm
+4. "Description?" → free-form (optional)
+5. "Can this device SSH to other registered devices?" → yes/no
+   - If yes: for each known device, "SSH alias for {name}?" → e.g. "uconsole-ts"
+6. POST to `/api/relay/register` with setup code + device info
+7. Server validates code (single-use, not expired), generates device token
+8. Server stores device metadata + token, deletes the code
 9. Write `~/.config/yuna/device.json` (serverUrl + deviceToken + deviceName)
 10. "Device registered. Run `yuna start` to begin listening."
+
+## CLI commands (full list)
+
+```
+yuna init                  # Deploy server, configure bot
+yuna init --manual         # Scaffold only, no auto-deploy
+yuna init --mcp            # Use MCP integrations where available
+yuna create-code           # Generate one-time setup code for adding devices
+yuna add-device --code X   # Register this machine as a device
+yuna start                 # Run device agent (foreground)
+yuna start --daemon        # Run device agent (background)
+yuna status                # Server health + device list
+yuna reset                 # Clear conversation history
+yuna revoke-device <name>  # Revoke a device's token
+yuna logs                  # Show recent audit log
+```
 
 ## CLI dependencies
 - `commander` — subcommands
