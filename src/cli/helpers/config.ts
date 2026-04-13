@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import type { YunaConfig, YunaDeviceConfig } from "../../shared/types.js";
@@ -59,6 +59,49 @@ export function saveDeviceConfig(config: YunaDeviceConfig): void {
   const path = getDevicePath();
   writeFileSync(path, JSON.stringify(config, null, 2));
   chmodSync(path, 0o600);
+}
+
+// ─── Init resume file ────────────────────────────────────────────────────────
+
+export interface InitResume {
+  botName?: string;
+  ownerName?: string;
+  botToken?: string;
+  botUsername?: string;
+  ownerId?: string;
+  anthropicKey?: string;
+  redisUrl?: string;
+  redisToken?: string;
+  masterSecret?: string;
+  webhookSecret?: string;
+  deployMode?: "auto" | "manual";
+  serverUrl?: string;
+}
+
+function getResumePath(): string {
+  return join(getConfigDir(), ".init-resume.json");
+}
+
+export function loadInitResume(): InitResume | null {
+  const path = getResumePath();
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as InitResume;
+  } catch {
+    return null;
+  }
+}
+
+export function saveInitResume(resume: InitResume): void {
+  ensureDir();
+  const path = getResumePath();
+  writeFileSync(path, JSON.stringify(resume, null, 2));
+  chmodSync(path, 0o600);
+}
+
+export function clearInitResume(): void {
+  const path = getResumePath();
+  if (existsSync(path)) unlinkSync(path);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -7,12 +7,14 @@ import {
   saveOrchestrationTask,
   loadOrchestrationTask,
   deleteOrchestrationTask,
+  savePendingConfirm,
   appendLog,
 } from "./redis";
 import { listDeviceNames, isOnline } from "./devices";
 import { buildDeviceTools, toolToDevice } from "./tools";
 import { buildSystemPrompt } from "./system-prompt";
-import { sendMessage, sendTypingAction, mdToTgHtml } from "./telegram";
+import { sendMessage, sendTypingAction, mdToTgHtml, escapeHtml } from "./telegram";
+import { classifyToolCall } from "./risk";
 import type {
   OrchestrationTask,
   ToolCall,
@@ -101,10 +103,7 @@ export async function handleToolResult(
   const toolResults = task.toolCalls.map((tc) => ({
     type: "tool_result" as const,
     tool_use_id: tc.id,
-    content:
-      tc.exitCode !== undefined && tc.exitCode !== 0
-        ? `[exit code ${tc.exitCode}]\n${tc.result || "(no output)"}`
-        : tc.result || "(no output)",
+    content: wrapToolOutput(tc.device, tc.name, tc.result, tc.exitCode),
   }));
 
   const history = await loadConversation();
@@ -226,7 +225,7 @@ async function dispatchToolCalls(
     const toolResults = toolCalls.map((tc) => ({
       type: "tool_result" as const,
       tool_use_id: tc.id,
-      content: tc.result!,
+      content: wrapToolOutput(tc.device, tc.name, tc.result, tc.exitCode),
       is_error: true,
     }));
 
@@ -284,6 +283,23 @@ async function dispatchSingleCommand(
   chatId: number,
   messageId: number
 ): Promise<void> {
+  // Risk gate: if the command is destructive, hold it for user confirmation
+  // instead of dispatching. Defends against prompt-injection-driven misuse.
+  const risk = classifyToolCall(toolCall.name, toolCall.input);
+  if (risk.risky) {
+    await requestConfirmation(taskId, toolCall, risk.reason || "risky", risk.summary, chatId);
+    return;
+  }
+
+  await dispatchSingleCommandRaw(taskId, toolCall, chatId, messageId);
+}
+
+async function dispatchSingleCommandRaw(
+  taskId: string,
+  toolCall: ToolCall,
+  chatId: number,
+  messageId: number
+): Promise<void> {
   const payload = JSON.stringify({
     type: "command",
     taskId,
@@ -315,6 +331,62 @@ async function dispatchSingleCommand(
   });
 }
 
+// ─── Confirmation gate for risky commands ────────────────────────────────────
+
+async function requestConfirmation(
+  taskId: string,
+  toolCall: ToolCall,
+  reason: string,
+  summary: string,
+  chatId: number
+): Promise<void> {
+  const device = toolCall.device;
+  const confirmText =
+    `⚠️ <b>Confirm risky command</b>\n` +
+    `Device: <b>${escapeHtml(device)}</b>\n` +
+    `Reason: ${escapeHtml(reason)}\n\n` +
+    `<pre>${escapeHtml(summary)}</pre>\n\n` +
+    `React 👍 to run, ❌ to cancel. (expires in 5 min)`;
+
+  const confirmMsgId = await sendMessage(chatId, confirmText);
+  if (!confirmMsgId) {
+    // Couldn't send confirmation message — fail closed: treat as declined.
+    await handleConfirmationDecline(taskId);
+    return;
+  }
+
+  // Load existing task to find the toolCall index (currentIndex points at it).
+  const task = await loadOrchestrationTask(taskId);
+  const toolCallIndex = task ? task.currentIndex : 0;
+
+  await savePendingConfirm(confirmMsgId, { taskId, toolCallIndex });
+
+  await appendLog({
+    ts: new Date().toISOString(),
+    type: "command",
+    device,
+    tool: toolCall.name,
+    command: `[confirmation requested] ${summary}`,
+    taskId,
+  });
+}
+
+export async function handleConfirmationApprove(taskId: string): Promise<void> {
+  const task = await loadOrchestrationTask(taskId);
+  if (!task) return;
+  const toolCall = task.toolCalls[task.currentIndex];
+  if (!toolCall) return;
+  await sendTypingAction(task.chatId);
+  await dispatchSingleCommandRaw(taskId, toolCall, task.chatId, task.messageId);
+}
+
+export async function handleConfirmationDecline(taskId: string): Promise<void> {
+  const task = await loadOrchestrationTask(taskId);
+  if (!task) return;
+  // Synthesize a tool_result saying the user declined, then continue the loop.
+  await handleToolResult(taskId, "User declined to run this command.", 1);
+}
+
 async function sendFinalText(
   chatId: number,
   response: Anthropic.Message
@@ -325,6 +397,21 @@ async function sendFinalText(
   const text = textBlock?.text || "(no response)";
   const formatted = mdToTgHtml(text);
   await sendMessage(chatId, formatted);
+}
+
+// Wrap tool output in untrusted-data delimiters. The system prompt instructs
+// the model to treat everything inside <tool_output> as data, never as
+// instructions. This is a defense against prompt injection from command
+// stdout, file contents, or device logs.
+function wrapToolOutput(
+  device: string,
+  tool: string,
+  result: string | undefined,
+  exitCode: number | undefined
+): string {
+  const body = result || "(no output)";
+  const exitAttr = exitCode !== undefined ? ` exit="${exitCode}"` : "";
+  return `<tool_output device="${device}" tool="${tool}"${exitAttr}>\n${body}\n</tool_output>`;
 }
 
 async function handleClaudeError(chatId: number, error: unknown): Promise<void> {

@@ -115,6 +115,33 @@ Goal: prove the full pipeline works with a real deploy before publishing.
 3. `npm publish --access public`
 4. Test install from a fresh machine: `npm install -g yuna-bot && yuna init`
 
+### Phase 4.5: Wizard UX polish (from first real run, 2026-04-12)
+
+Discovered while running `yuna init` against a live Vercel account for the first time. None block E2E testing, but all should land before npm publish.
+
+- **Use aliased production URL, not deployment URL** — `deployToVercel()` currently regex-matches the first `https://*.vercel.app` in `vercel deploy` output, which is the immutable deployment URL (`luigi-64z0r7lua-chopcheese.vercel.app`). That URL is subject to "Protection for Deployment URLs" even when Vercel Authentication is off, so Telegram's webhook bounces off an SSO page. The correct URL is the `Aliased: ` line (`luigi-eta.vercel.app`) — prefer that match. Fallback to the deployment URL only if no alias is found.
+
+- **Detect + disable Deployment Protection programmatically** — even after switching to the alias, new Vercel projects can default to SSO-protected. Either (a) use the Vercel REST API during `init` to disable protection on the project, or (b) detect it via a probe `curl` of `/api/health` after deploy and print a clear message: *"Your project has Deployment Protection enabled. Disable it at https://vercel.com/<team>/<project>/settings/deployment-protection — the webhook is already secured by TELEGRAM_WEBHOOK_SECRET."*
+
+- **Per-stage deploy progress output** — right now `deployToVercel()` pipes stdout to capture the URL, so users see ~3 minutes of silence between "Linked to project" and the final URL. Split into visible stages:
+  1. `ora("Linking Vercel project...")` → show `vercel link` output live (already done via `stdio: "inherit"`)
+  2. `ora("Setting environment variables (8)...")` → tick per var: `✓ TELEGRAM_BOT_TOKEN`, etc.
+  3. `ora("Deploying...")` → tail `vercel deploy --prod` stdout to stderr/spinner text so users see build progress
+  4. Final `✓ Deployed to <url>`
+  - Implementation: stream stdout line-by-line via `spawn()` instead of `spawnSync()`, pipe through the ora spinner's text, parse the URL from the last matching line.
+
+- **`yuna upgrade` command** — for when `yuna-bot` ships a new server template. Runs `vercel deploy --prod` from the freshly bundled template against the already-linked project (reads serverUrl from `~/.config/yuna/config.json`, finds or re-creates `.vercel/project.json`). No re-asking for secrets. This is how users get server updates without forking a git repo.
+
+- **Interactive fallback when link ambiguous** — `vercel link --yes` currently works because the user has a clear default scope. If a user has multiple teams, `--yes` may still pick the wrong one. Consider dropping `--yes` on `link` and letting Vercel's interactive scope picker run.
+
+- **Resume file housekeeping** — currently `.init-resume.json` is only cleared on full success. If a user abandons init for good (chooses a different deploy path, etc.), the file lingers. Add `yuna init --fresh` to force-clear before starting, and prune the file on clean `SIGINT` if the user hasn't entered anything yet.
+
+- **Rename the temp deploy dir cleanup** — `.yuna-deploy-<slug>/` is left behind in cwd after a successful init. Either move it to `~/.cache/yuna/deploy/<slug>/` (honoring `XDG_CACHE_HOME`) so it's out of the user's workspace, or delete it after success (but keep `.vercel/` contents since they're needed for future `yuna upgrade`).
+
+- **Clearer deploy-mode preflight** — if auto-deploy is picked but the user isn't logged into Vercel, we run `vercel login` (opens browser). Works, but the message says "Running `vercel login`..." without warning that a browser tab is about to open. Add: "A browser will open for Vercel authentication — come back here when done."
+
+- **Better bot-name → Vercel project-name feedback** — slugification is silent. Tell the user: `Bot name "Luigi" → Vercel project slug "luigi"`. Prevents the "why is my project called yuna-deploy" confusion from first run.
+
 ### Phase 5: Nice-to-haves (post-v0.1)
 
 - **Stale task watchdog** — Vercel cron that detects expired orchestration tasks, notifies Telegram

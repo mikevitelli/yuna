@@ -4,3 +4,7 @@ dist/
 .env
 .env.local
 *.tsbuildinfo
+
+# Wizard scratch dirs (created by `yuna init` auto-deploy path)
+.yuna-deploy/
+.yuna-deploy-*/

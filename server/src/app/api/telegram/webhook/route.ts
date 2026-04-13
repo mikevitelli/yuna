@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyWebhook, sendMessage, sendTypingAction, escapeHtml } from "@/lib/telegram";
 import { isOwner, createSetupCode, generateSetupCodeString } from "@/lib/auth";
-import { handleUserMessage, clearConversationHistory } from "@/lib/orchestrator";
+import {
+  handleUserMessage,
+  clearConversationHistory,
+  handleConfirmationApprove,
+  handleConfirmationDecline,
+} from "@/lib/orchestrator";
 import { listDevicesWithStatus, removeDevice } from "@/lib/devices";
-import { readLog } from "@/lib/redis";
+import { readLog, loadPendingConfirm, deletePendingConfirm } from "@/lib/redis";
 import { isRateLimited } from "@/lib/rate-limit";
 
 export const maxDuration = 60;
@@ -19,6 +24,19 @@ const REACTIONS: Record<string, string | null> = {
   "\u2705": "yes, confirmed",
   "\u274C": "cancel, don't do that",
 };
+
+// Subset of reactions treated as approval/decline for risky-command confirmations.
+const APPROVE_EMOJIS = new Set([
+  "\u{1F44D}", // 👍
+  "\u2764\uFE0F", // ❤️
+  "\u2764", // ❤
+  "\u2705", // ✅
+  "\u{1F680}", // 🚀
+]);
+const DECLINE_EMOJIS = new Set([
+  "\u{1F44E}", // 👎
+  "\u274C", // ❌
+]);
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!verifyWebhook(request)) {
@@ -175,8 +193,38 @@ async function handleReaction(reaction: Record<string, unknown>): Promise<void> 
 
   if (!chatId || !msgId || !isOwner(userId) || !newReactions?.length) return;
   const emoji = newReactions[0]?.emoji;
-  if (!emoji || !(emoji in REACTIONS)) return;
+  if (!emoji) return;
 
+  // Pending-confirmation path: if this reaction is on a risky-command
+  // confirmation prompt, consume it here and don't inject a new user turn.
+  const pending = await loadPendingConfirm(msgId);
+  if (pending) {
+    if (APPROVE_EMOJIS.has(emoji)) {
+      await deletePendingConfirm(msgId);
+      try {
+        await handleConfirmationApprove(pending.taskId);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        await sendMessage(chatId, `Error: ${escapeHtml(errMsg)}`);
+      }
+      return;
+    }
+    if (DECLINE_EMOJIS.has(emoji)) {
+      await deletePendingConfirm(msgId);
+      try {
+        await handleConfirmationDecline(pending.taskId);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        await sendMessage(chatId, `Error: ${escapeHtml(errMsg)}`);
+      }
+      return;
+    }
+    // Unknown reaction on a pending confirmation — ignore.
+    return;
+  }
+
+  // Fall through to the general retry/yes/no reaction behavior.
+  if (!(emoji in REACTIONS)) return;
   const action = REACTIONS[emoji] || "retry the previous action";
   await sendTypingAction(chatId);
   try {

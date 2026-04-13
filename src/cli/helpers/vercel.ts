@@ -51,29 +51,34 @@ export async function deployToVercel(
   serverDir: string,
   envVars: Record<string, string>
 ): Promise<string> {
-  // Link/deploy (first deploy will prompt for project name)
-  const initial = spawnSync(
-    "vercel",
-    ["deploy", "--prod", "--yes"],
-    { cwd: serverDir, encoding: "utf-8" }
-  );
-  if (initial.status !== 0) {
-    throw new Error(`vercel deploy failed: ${initial.stderr}`);
+  // Link first (interactive — user picks scope, confirms project name).
+  // Using `vercel link` instead of `deploy --yes` so prompts surface clearly.
+  const link = spawnSync("vercel", ["link", "--yes"], {
+    cwd: serverDir,
+    stdio: "inherit",
+  });
+  if (link.status !== 0) {
+    throw new Error(`vercel link failed (exit ${link.status})`);
   }
 
-  // Set env vars, then redeploy to apply them
+  // Set env vars before first deploy so the build has them.
   await setVercelEnvVars(serverDir, envVars);
 
-  const redeploy = spawnSync("vercel", ["deploy", "--prod", "--yes"], {
+  // Deploy with inherited stdio so the user sees progress and any prompts,
+  // but capture stdout separately to parse the deployment URL.
+  const deploy = spawnSync("vercel", ["deploy", "--prod"], {
     cwd: serverDir,
     encoding: "utf-8",
+    stdio: ["inherit", "pipe", "inherit"],
   });
-  if (redeploy.status !== 0) {
-    throw new Error(`vercel redeploy failed: ${redeploy.stderr}`);
+  if (deploy.status !== 0) {
+    throw new Error(`vercel deploy failed (exit ${deploy.status})`);
   }
 
-  // Extract URL from output (Vercel prints "https://..." lines)
-  const urlMatch = redeploy.stdout.match(/https:\/\/[^\s]+\.vercel\.app/);
+  // Echo the captured stdout so the user sees the URL too.
+  if (deploy.stdout) process.stdout.write(deploy.stdout);
+
+  const urlMatch = deploy.stdout.match(/https:\/\/[^\s]+\.vercel\.app/);
   if (!urlMatch) {
     throw new Error("could not parse deployment URL from vercel output");
   }

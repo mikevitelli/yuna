@@ -22,6 +22,8 @@ export const keyStream = (name: string) => `yuna:stream:${name}`;
 export const KEY_CONVERSATION = "yuna:conversation:messages";
 export const keyOrchestration = (taskId: string) =>
   `yuna:orchestration:${taskId}`;
+export const keyPendingConfirm = (msgId: number | string) =>
+  `yuna:pending-confirm:${msgId}`;
 export const KEY_LOG = "yuna:log";
 export const KEY_MASTER = "yuna:master";
 
@@ -242,6 +244,34 @@ export async function loadOrchestrationTask(
 
 export async function deleteOrchestrationTask(taskId: string): Promise<void> {
   await redis.del(keyOrchestration(taskId));
+}
+
+// ─── Pending confirmation (risky command gate) ───────────────────────────────
+
+export interface PendingConfirm {
+  taskId: string;
+  toolCallIndex: number;
+}
+
+export async function savePendingConfirm(
+  msgId: number,
+  pending: PendingConfirm
+): Promise<void> {
+  await redis.set(keyPendingConfirm(msgId), JSON.stringify(pending), {
+    ex: 300,
+  });
+}
+
+export async function loadPendingConfirm(
+  msgId: number
+): Promise<PendingConfirm | null> {
+  const raw = await redis.get<string>(keyPendingConfirm(msgId));
+  if (!raw) return null;
+  return typeof raw === "string" ? JSON.parse(raw) : (raw as PendingConfirm);
+}
+
+export async function deletePendingConfirm(msgId: number): Promise<void> {
+  await redis.del(keyPendingConfirm(msgId));
 }
 
 // ─── Audit log ───────────────────────────────────────────────────────────────
