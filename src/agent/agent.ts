@@ -23,16 +23,37 @@ function log(...args: unknown[]): void {
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true }
-    );
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+// Wrap fetch so each call attaches ONE abort listener to the parent signal
+// and removes it on completion. Without this, Node's built-in fetch accumulates
+// listeners on a long-lived signal and emits a MaxListenersExceededWarning
+// after ~10 iterations of the polling loop.
+async function fetchWithSignal(
+  url: string,
+  init: RequestInit,
+  parentSignal?: AbortSignal
+): Promise<Response> {
+  if (!parentSignal) return fetch(url, init);
+  const inner = new AbortController();
+  if (parentSignal.aborted) inner.abort();
+  const onAbort = () => inner.abort();
+  parentSignal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await fetch(url, { ...init, signal: inner.signal });
+  } finally {
+    parentSignal.removeEventListener("abort", onAbort);
+  }
 }
 
 export async function startAgent({ config, signal }: AgentOptions): Promise<void> {
@@ -51,10 +72,11 @@ export async function startAgent({ config, signal }: AgentOptions): Promise<void
   while (!signal?.aborted) {
     try {
       const pollUrl = `${serverUrl}/api/relay/poll`;
-      const res = await fetch(pollUrl, {
-        headers: authHeaders,
-        signal,
-      });
+      const res = await fetchWithSignal(
+        pollUrl,
+        { headers: authHeaders },
+        signal
+      );
 
       if (!res.ok) {
         log(`Poll failed: HTTP ${res.status}, backing off`);
@@ -93,16 +115,20 @@ export async function startAgent({ config, signal }: AgentOptions): Promise<void
         const result = await executeCommand(wireCommand);
         log(`→ ${result.output.length} chars (exit ${result.exitCode})`);
 
-        const respondRes = await fetch(`${serverUrl}/api/relay/respond`, {
-          method: "POST",
-          headers: authHeaders,
-          body: JSON.stringify({
-            taskId: msg.taskId,
-            output: result.output,
-            exitCode: result.exitCode,
-            streamId: msg.streamId,
-          }),
-        });
+        const respondRes = await fetchWithSignal(
+          `${serverUrl}/api/relay/respond`,
+          {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({
+              taskId: msg.taskId,
+              output: result.output,
+              exitCode: result.exitCode,
+              streamId: msg.streamId,
+            }),
+          },
+          signal
+        );
 
         if (!respondRes.ok) {
           log(`Failed to post result: HTTP ${respondRes.status}`);
