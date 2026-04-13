@@ -5,11 +5,19 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/yuna-bot"><img src="https://img.shields.io/npm/v/yuna-bot?color=cb3837&logo=npm&label=yuna-bot" /></a>
   <img src="https://img.shields.io/badge/runtime-Vercel-black?logo=vercel" />
-  <img src="https://img.shields.io/badge/model-Claude_Haiku-orange?logo=anthropic" />
-  <img src="https://img.shields.io/badge/queue-Upstash_Redis-teal?logo=redis" />
-  <img src="https://img.shields.io/badge/interface-Telegram-blue?logo=telegram" />
-  <img src="https://img.shields.io/badge/cli-npm-red?logo=npm" />
+  <img src="https://img.shields.io/badge/model-Claude_Haiku-f5a623?logo=anthropic" />
+  <img src="https://img.shields.io/badge/queue-Upstash_Redis-dc382c?logo=redis" />
+  <img src="https://img.shields.io/badge/interface-Telegram-0088cc?logo=telegram" />
+  <img src="https://img.shields.io/badge/license-MIT-green" />
+  <img src="https://img.shields.io/badge/node-%E2%89%A518-blue?logo=node.js" />
+</p>
+
+<p align="center">
+  <a href="https://yuna.bot">yuna.bot</a> ·
+  <a href="https://yuna.bot/docs">Docs</a> ·
+  <a href="https://www.npmjs.com/package/yuna-bot">npm</a>
 </p>
 
 ---
@@ -109,6 +117,8 @@ graph TB
 | **Per-device auth** | Each device has its own revocable UUID token, no shared secrets |
 | **One-time setup codes** | 10min TTL single-use codes for device onboarding |
 | **Agentic loops** | Multi-step tool use — Claude can chain commands across devices |
+| **Risk gate** | Destructive commands (rm -rf, dd, sudo, force-push, writes) held behind 👍/❌ Telegram confirmation. Defends against prompt injection via tool output. |
+| **Untrusted delimiters** | All tool output wrapped in `<tool_output>` tags; system prompt tells Claude to treat it as data, never instructions |
 | **Device mesh** (opt-in) | SSH aliases enable direct `transfer_file` between devices |
 | **Model overrides** | `@opus`, `@sonnet`, `@haiku` prefix to pick the model |
 | **Reactions** | 👍 proceed / 👎 stop / 🔄 retry / 🚀 ship / ✅ confirm / ❌ cancel |
@@ -116,6 +126,7 @@ graph TB
 | **Audit log** | Every command + result in Redis, viewable via `/logs` |
 | **Prompt caching** | System prompt cached between invocations |
 | **Owner lock** | `TELEGRAM_OWNER_ID` restricts the bot to a single user |
+| **Interruption-resilient wizard** | `yuna init` persists answers to a resume file; deploy failures don't cost you your secrets |
 
 ## Install
 
@@ -279,6 +290,7 @@ flowchart LR
 | `yuna:stream:{name}` | STREAM | Per-device command queue (group: `agent`) |
 | `yuna:conversation:messages` | STRING | Shared conversation history (JSON) |
 | `yuna:orchestration:{taskId}` | STRING | In-flight agentic task state (5min TTL) |
+| `yuna:pending-confirm:{msgId}` | STRING | Risky command awaiting 👍/❌ reaction (5min TTL) |
 | `yuna:log` | LIST | Audit log, capped at 1000 entries |
 | `yuna:master` | STRING | Hashed master secret |
 
@@ -287,32 +299,63 @@ flowchart LR
 - **No shared secrets between devices.** Each device has its own UUID token.
 - **Token revocation** is instant — delete the Redis key.
 - **One-time setup codes** (10min TTL, single-use) prevent replay during registration.
+- **Risk gate.** `rm -rf`, `dd`, `sudo`, force-pushes, file writes, and ~25 other destructive patterns are classified by `server/src/lib/risk.ts` before dispatch. Matching commands are held in Redis as a pending confirmation until the owner reacts 👍 (approve) or ❌ (decline) on the Telegram prompt. Defense-in-depth against prompt injection via tool output.
+- **Untrusted output delimiters.** Every `tool_result` fed back to Claude is wrapped in `<tool_output device="..." tool="..." exit="...">...</tool_output>` and the system prompt explicitly tells the model to treat that content as untrusted data.
 - **Telegram webhook secret** prevents spoofed webhook calls.
 - **Owner lock** — `TELEGRAM_OWNER_ID` restricts the bot to a single user.
 - **Rate limiting** on the webhook prevents abuse.
 - **Command execution** runs as the device agent's user (not root). Don't run the agent as root.
 - **Outbound only** — devices never accept inbound connections.
 
+## Project layout
+
+```
+yuna/
+├── src/                 CLI + device agent (published to npm as yuna-bot)
+├── server/              Next.js template deployed by the wizard
+├── landing/             Marketing + docs site (yuna.bot)
+├── bin/yuna.js          CLI shim
+├── PLAN.md              Implementation roadmap + status
+├── CLAUDE.md            Architecture guide for Claude Code sessions
+└── README.md            This file
+```
+
+Three independent Vercel deployments live off this repo:
+
+| Path | Purpose | Vercel project |
+|---|---|---|
+| `landing/` | Marketing + docs | `yuna` (manual root directory setting) |
+| `server/` | Template users deploy via `yuna init` | per-user, created by the wizard |
+| `src/` (built to `dist/`) | CLI published as `yuna-bot` on npm | n/a, not deployed to Vercel |
+
 ## Development
 
 ```bash
 git clone https://github.com/mikevitelli/yuna
 cd yuna
+
+# CLI (npm package)
 npm install
 npm run build:cli
 node bin/yuna.js --help
 
-cd server && npm install
-npm run dev           # local server
-npm run typecheck     # type check everything
+# Server (the template the wizard deploys)
+cd server && npm install && npm run dev
+
+# Landing site (yuna.bot)
+cd ../landing && npm install && npm run dev
+# or from root: npm run dev:landing
+
+# Type check everything
+npm run typecheck
 ```
 
 See `PLAN.md` for the implementation roadmap and `CLAUDE.md` for the architecture guide that any Claude Code session can pick up from.
 
 ## Status
 
-**v0.1 — Under active development.** Server and CLI are fully implemented and type-clean. End-to-end testing and npm publish are the next milestones. Not yet recommended for production use.
+**v0.1.0 — shipped to npm 2026-04-13.** CLI + server + landing site all live. End-to-end tested against a real uConsole device (Luigi). Confirmation gate and multi-device routing are the next things to verify in live use. Still early — not production-hardened — but working.
 
 ## License
 
-MIT
+MIT © 2026 mikevitelli
