@@ -4,7 +4,18 @@
   "description": "Self-hosted AI-powered multi-device orchestrator over Telegram. Claude picks the right device and runs the command — devices are just hands.",
   "type": "module",
   "bin": { "yuna": "./bin/yuna.js" },
-  "files": ["bin/", "dist/", "server/", "README.md", "LICENSE"],
+  "files": [
+    "bin/",
+    "dist/",
+    "server/src/",
+    "server/package.json",
+    "server/package-lock.json",
+    "server/tsconfig.json",
+    "server/next.config.ts",
+    "server/next-env.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsup && cd server && npm run build",
     "build:cli": "tsup",
