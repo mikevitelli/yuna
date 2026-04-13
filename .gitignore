@@ -8,3 +8,6 @@ dist/
 # Wizard scratch dirs (created by `yuna init` auto-deploy path)
 .yuna-deploy/
 .yuna-deploy-*/
+
+# Vercel CLI project links (per-subdir)
+.vercel/
