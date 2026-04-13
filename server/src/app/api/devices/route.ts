@@ -1,18 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import { validateMasterSecretHeader, validateDeviceToken } from "@/lib/auth";
+import { listDevicesWithStatus } from "@/lib/devices";
 
-/**
- * GET /api/devices — List all registered devices with status.
- *
- * TODO: Implement:
- * 1. Validate auth (master secret or device token)
- * 2. Call listDevicesWithStatus() from devices.ts
- * 3. Return array of devices with online/offline status
- *
- * Response: { devices: DeviceWithStatus[] }
- */
-export async function GET(
-  _request: NextRequest
-): Promise<NextResponse> {
-  // TODO: validate auth, list devices with status
-  throw new Error("TODO: implement GET /api/devices");
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  // Accept either master secret OR device token for reading the device list
+  const masterOk = await validateMasterSecretHeader(request);
+  if (!masterOk) {
+    const deviceAuth = await validateDeviceToken(request);
+    if (!deviceAuth) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
+  }
+
+  const devices = await listDevicesWithStatus();
+  return NextResponse.json({ devices });
 }

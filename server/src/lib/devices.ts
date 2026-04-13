@@ -1,97 +1,127 @@
-import type { DeviceConfig } from "./types.js";
+import {
+  redis,
+  KEY_DEVICES,
+  keyDevice,
+  keyLastSeen,
+  keyStream,
+  ensureConsumerGroup,
+} from "./redis";
+import { revokeDeviceToken } from "./auth";
+import type { DeviceConfig } from "./types";
 
-/**
- * Device registry CRUD — all other server modules depend on this.
- * Devices are stored in Redis:
- *   yuna:devices          → SET of device names
- *   yuna:device:{name}    → HASH with device metadata
- *   yuna:lastseen:{name}  → STRING with ISO timestamp
- */
-
-// Re-export DeviceConfig for convenience
 export type { DeviceConfig };
 
-/** Device with computed online status */
 export interface DeviceWithStatus extends DeviceConfig {
   online: boolean;
   lastSeen: string | null;
 }
 
-/**
- * TODO: List all registered device names.
- * SMEMBERS yuna:devices
- */
+const ONLINE_THRESHOLD_MS = 60_000;
+
+// ─── Reads ───────────────────────────────────────────────────────────────────
+
 export async function listDeviceNames(): Promise<string[]> {
-  // TODO: redis.smembers(KEY_DEVICES)
-  throw new Error("TODO: implement listDeviceNames");
+  return redis.smembers(KEY_DEVICES);
 }
 
-/**
- * TODO: Get a single device's config by name.
- * HGETALL yuna:device:{name}
- */
-export async function getDevice(
-  _name: string
-): Promise<DeviceConfig | null> {
-  // TODO: redis.hgetall(keyDevice(name)), parse capabilities/ssh from JSON
-  throw new Error("TODO: implement getDevice");
+export async function getDevice(name: string): Promise<DeviceConfig | null> {
+  const raw = await redis.hgetall<Record<string, string>>(keyDevice(name));
+  if (!raw || Object.keys(raw).length === 0) return null;
+
+  return {
+    name,
+    os: String(raw.os || ""),
+    description: String(raw.description || ""),
+    capabilities: parseJsonField(raw.capabilities, []),
+    ssh: parseJsonField(raw.ssh, {}),
+    registeredAt: String(raw.registeredAt || ""),
+  };
 }
 
-/**
- * TODO: List all devices with their online/offline status.
- * Combines device metadata with lastSeen timestamp.
- * A device is "online" if now - lastSeen < 60s.
- */
+export async function getLastSeen(name: string): Promise<string | null> {
+  return redis.get<string>(keyLastSeen(name));
+}
+
+export async function isOnline(name: string): Promise<boolean> {
+  const lastSeen = await getLastSeen(name);
+  if (!lastSeen) return false;
+  return Date.now() - new Date(lastSeen).getTime() < ONLINE_THRESHOLD_MS;
+}
+
 export async function listDevicesWithStatus(): Promise<DeviceWithStatus[]> {
-  // TODO: get all device names, fetch each device + lastSeen, compute online status
-  throw new Error("TODO: implement listDevicesWithStatus");
+  const names = await listDeviceNames();
+  if (names.length === 0) return [];
+
+  const results = await Promise.all(
+    names.map(async (name) => {
+      const [device, lastSeen] = await Promise.all([
+        getDevice(name),
+        getLastSeen(name),
+      ]);
+      if (!device) return null;
+      const online =
+        !!lastSeen && Date.now() - new Date(lastSeen).getTime() < ONLINE_THRESHOLD_MS;
+      return { ...device, lastSeen, online };
+    })
+  );
+
+  return results.filter((d): d is DeviceWithStatus => d !== null);
 }
 
-/**
- * TODO: Register a new device.
- * 1. SADD name to yuna:devices
- * 2. HSET device metadata to yuna:device:{name}
- * 3. Create Redis stream consumer group for yuna:stream:{name}
- */
-export async function registerDevice(
-  _config: DeviceConfig
-): Promise<void> {
-  // TODO: redis.sadd(KEY_DEVICES, config.name)
-  //       redis.hset(keyDevice(config.name), { ...config, capabilities: JSON.stringify(...), ssh: JSON.stringify(...) })
-  //       Create consumer group "agent" on stream
-  throw new Error("TODO: implement registerDevice");
+// ─── Writes ──────────────────────────────────────────────────────────────────
+
+export async function registerDevice(config: DeviceConfig): Promise<void> {
+  await redis.sadd(KEY_DEVICES, config.name);
+  await redis.hset(keyDevice(config.name), {
+    os: config.os,
+    description: config.description,
+    capabilities: JSON.stringify(config.capabilities),
+    ssh: JSON.stringify(config.ssh),
+    registeredAt: config.registeredAt,
+  });
+  await ensureConsumerGroup(config.name);
+  await touchDevice(config.name);
 }
 
-/**
- * TODO: Update a device's metadata.
- * HSET on yuna:device:{name} with changed fields.
- */
 export async function updateDevice(
-  _name: string,
-  _updates: Partial<Omit<DeviceConfig, "name">>
+  name: string,
+  updates: Partial<Omit<DeviceConfig, "name">>
 ): Promise<void> {
-  // TODO: redis.hset(keyDevice(name), updates)
-  throw new Error("TODO: implement updateDevice");
+  const serialized: Record<string, string> = {};
+  if (updates.os !== undefined) serialized.os = updates.os;
+  if (updates.description !== undefined)
+    serialized.description = updates.description;
+  if (updates.capabilities !== undefined)
+    serialized.capabilities = JSON.stringify(updates.capabilities);
+  if (updates.ssh !== undefined)
+    serialized.ssh = JSON.stringify(updates.ssh);
+  if (updates.registeredAt !== undefined)
+    serialized.registeredAt = updates.registeredAt;
+
+  if (Object.keys(serialized).length === 0) return;
+  await redis.hset(keyDevice(name), serialized);
 }
 
-/**
- * TODO: Remove a device entirely.
- * 1. SREM from yuna:devices
- * 2. DEL yuna:device:{name}
- * 3. DEL yuna:token:{token} (need to find token first)
- * 4. DEL yuna:stream:{name}
- * 5. DEL yuna:lastseen:{name}
- */
-export async function removeDevice(_name: string): Promise<void> {
-  // TODO: clean up all Redis keys for this device
-  throw new Error("TODO: implement removeDevice");
+export async function removeDevice(name: string): Promise<void> {
+  await revokeDeviceToken(name);
+  await redis.srem(KEY_DEVICES, name);
+  await redis.del(keyDevice(name));
+  await redis.del(keyStream(name));
+  await redis.del(keyLastSeen(name));
 }
 
-/**
- * TODO: Update a device's last-seen timestamp.
- * SET yuna:lastseen:{name} with 86400s TTL.
- */
-export async function touchDevice(_name: string): Promise<void> {
-  // TODO: redis.set(keyLastSeen(name), new Date().toISOString(), { ex: 86400 })
-  throw new Error("TODO: implement touchDevice");
+export async function touchDevice(name: string): Promise<void> {
+  await redis.set(keyLastSeen(name), new Date().toISOString(), { ex: 86400 });
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseJsonField<T>(raw: unknown, fallback: T): T {
+  if (!raw) return fallback;
+  if (typeof raw !== "string") return raw as T;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
 }

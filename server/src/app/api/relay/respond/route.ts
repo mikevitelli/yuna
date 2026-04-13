@@ -1,20 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
+import { validateDeviceToken } from "@/lib/auth";
+import { touchDevice } from "@/lib/devices";
+import { ackStream, appendLog } from "@/lib/redis";
+import { handleToolResult } from "@/lib/orchestrator";
 
-/**
- * POST /api/relay/respond — Device posts command execution result.
- *
- * TODO: Implement:
- * 1. Validate device token → get device identity
- * 2. Parse body: { device, taskId, output, exitCode, streamId }
- * 3. XACK the processed stream message
- * 4. Load the orchestration task by taskId
- * 5. Call resumeTask() to continue the agentic loop
- * 6. Log to audit log
- * 7. Return { ok: true }
- */
-export async function POST(
-  _request: NextRequest
-): Promise<NextResponse> {
-  // TODO: validate token, process response, resume orchestration
-  throw new Error("TODO: implement POST /api/relay/respond");
+export const maxDuration = 60;
+
+interface RespondBody {
+  taskId: string;
+  output: string;
+  exitCode?: number;
+  streamId?: string;
+}
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const auth = await validateDeviceToken(request);
+  if (!auth) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  let body: RespondBody;
+  try {
+    body = (await request.json()) as RespondBody;
+  } catch {
+    return NextResponse.json({ error: "invalid json" }, { status: 400 });
+  }
+
+  if (!body.taskId) {
+    return NextResponse.json({ error: "taskId required" }, { status: 400 });
+  }
+
+  const device = auth.device;
+  await touchDevice(device);
+
+  // ACK the stream message so it's not redelivered
+  if (body.streamId) {
+    await ackStream(device, body.streamId);
+  }
+
+  // Log the response
+  await appendLog({
+    ts: new Date().toISOString(),
+    type: "response",
+    device,
+    tool: "",
+    exitCode: body.exitCode,
+    outputLength: body.output?.length,
+    taskId: body.taskId,
+  });
+
+  // Continue the orchestrator loop — this calls Claude again
+  await handleToolResult(body.taskId, body.output || "", body.exitCode);
+
+  return NextResponse.json({ ok: true });
 }

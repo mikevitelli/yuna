@@ -1,19 +1,23 @@
 import { NextResponse } from "next/server";
+import { redis } from "@/lib/redis";
 
-/**
- * GET /api/health — Server health check.
- * No auth required. Returns server status and Redis connectivity.
- *
- * TODO: Implement:
- * 1. Ping Redis to verify connectivity
- * 2. Return { status: "ok", timestamp, redis: "connected"|"error" }
- * 3. Return 503 if Redis is down
- */
 export async function GET(): Promise<NextResponse> {
-  // TODO: implement health check
-  return NextResponse.json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    // TODO: add redis connectivity check
-  });
+  try {
+    await redis.ping();
+    return NextResponse.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      redis: "connected",
+    });
+  } catch (e) {
+    return NextResponse.json(
+      {
+        status: "error",
+        timestamp: new Date().toISOString(),
+        redis: "error",
+        message: e instanceof Error ? e.message : String(e),
+      },
+      { status: 503 }
+    );
+  }
 }

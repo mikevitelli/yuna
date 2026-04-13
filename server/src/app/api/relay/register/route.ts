@@ -1,24 +1,82 @@
 import { NextRequest, NextResponse } from "next/server";
+import { validateSetupCode, issueDeviceToken } from "@/lib/auth";
+import { getDevice, registerDevice } from "@/lib/devices";
+import type { DeviceConfig } from "@/lib/types";
 
-/**
- * POST /api/relay/register — Register a new device.
- *
- * TODO: Implement:
- * 1. Parse body: { code, name, os, description, capabilities, ssh }
- * 2. Validate the one-time setup code (validateSetupCode from auth.ts)
- * 3. Check device name isn't already taken
- * 4. Register the device in Redis (registerDevice from devices.ts)
- * 5. Issue a per-device token (issueDeviceToken from auth.ts)
- * 6. Return { token, device: name }
- *
- * Error responses:
- * - 400: missing fields
- * - 401: invalid or expired setup code
- * - 409: device name already registered
- */
-export async function POST(
-  _request: NextRequest
-): Promise<NextResponse> {
-  // TODO: validate setup code, register device, issue token
-  throw new Error("TODO: implement POST /api/relay/register");
+interface RegisterRequest {
+  code: string;
+  name: string;
+  os?: string;
+  description?: string;
+  capabilities?: string[];
+  ssh?: Record<string, string>;
+}
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  let body: RegisterRequest;
+  try {
+    body = (await request.json()) as RegisterRequest;
+  } catch {
+    return NextResponse.json({ error: "invalid json" }, { status: 400 });
+  }
+
+  if (!body.code || typeof body.code !== "string") {
+    return NextResponse.json(
+      { error: "setup code required" },
+      { status: 400 }
+    );
+  }
+  if (!body.name || typeof body.name !== "string") {
+    return NextResponse.json(
+      { error: "device name required" },
+      { status: 400 }
+    );
+  }
+  if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(body.name)) {
+    return NextResponse.json(
+      {
+        error:
+          "device name must be lowercase alphanumeric + hyphens, max 31 chars",
+      },
+      { status: 400 }
+    );
+  }
+
+  // Validate + consume the setup code
+  const valid = await validateSetupCode(body.code);
+  if (!valid) {
+    return NextResponse.json(
+      { error: "invalid or expired setup code" },
+      { status: 401 }
+    );
+  }
+
+  // Check name availability
+  const existing = await getDevice(body.name);
+  if (existing) {
+    return NextResponse.json(
+      { error: `device "${body.name}" already registered` },
+      { status: 409 }
+    );
+  }
+
+  // Register the device
+  const config: DeviceConfig = {
+    name: body.name,
+    os: body.os || "unknown",
+    description: body.description || "",
+    capabilities: body.capabilities || [],
+    ssh: body.ssh || {},
+    registeredAt: new Date().toISOString(),
+  };
+  await registerDevice(config);
+
+  // Issue a per-device token
+  const token = await issueDeviceToken(body.name);
+
+  return NextResponse.json({
+    ok: true,
+    device: body.name,
+    token,
+  });
 }
