@@ -1,0 +1,25 @@
+# Source (shipped as dist/ via tsup)
+src/
+tsconfig.json
+tsup.config.ts
+
+# Scratch dirs from wizard
+.yuna-deploy/
+.yuna-deploy-*/
+
+# Server build/dev junk (we ship server/src/ and server/package.json only)
+server/node_modules/
+server/.next/
+server/.vercel/
+server/.env
+server/.env.*
+server/dist/
+server/*.tsbuildinfo
+
+# Misc
+.git/
+.gitignore
+.github/
+PLAN.md
+CLAUDE.md
+*.log

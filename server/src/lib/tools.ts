@@ -25,7 +25,8 @@ export async function buildDeviceTools(): Promise<Anthropic.Tool[]> {
           },
           timeout_seconds: {
             type: "number",
-            description: "Max execution time in seconds (default: 30)",
+            description:
+              "Max execution time in seconds (default: 60, max: 300). Raise for long-running commands like builds, package installs, nested LLM calls, or network-bound operations.",
           },
         },
         required: ["command"],

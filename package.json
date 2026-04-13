@@ -1,16 +1,41 @@
 {
   "name": "yuna-bot",
   "version": "0.1.0",
+  "description": "Self-hosted AI-powered multi-device orchestrator over Telegram. Claude picks the right device and runs the command — devices are just hands.",
   "type": "module",
   "bin": { "yuna": "./bin/yuna.js" },
-  "files": ["bin/", "dist/", "server/"],
+  "files": ["bin/", "dist/", "server/", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsup && cd server && npm run build",
     "build:cli": "tsup",
     "build:server": "cd server && npm run build",
     "dev": "cd server && npm run dev",
-    "typecheck": "tsc --noEmit && cd server && npx tsc --noEmit"
+    "typecheck": "tsc --noEmit && cd server && npx tsc --noEmit",
+    "prepublishOnly": "npm run build:cli"
   },
+  "keywords": [
+    "telegram",
+    "bot",
+    "claude",
+    "anthropic",
+    "ai-agent",
+    "orchestrator",
+    "multi-device",
+    "self-hosted",
+    "cli",
+    "vercel",
+    "upstash",
+    "redis-streams",
+    "tool-use"
+  ],
+  "author": "mikevitelli",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikevitelli/yuna.git"
+  },
+  "homepage": "https://github.com/mikevitelli/yuna#readme",
+  "bugs": { "url": "https://github.com/mikevitelli/yuna/issues" },
   "dependencies": {
     "commander": "^13.0.0",
     "inquirer": "^12.0.0",

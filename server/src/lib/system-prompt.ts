@@ -58,6 +58,7 @@ Risky commands (rm -rf, dd, sudo, systemctl stop, force-pushes, file writes, etc
 - When showing command output, include the key result, not raw dumps
 - If a command fails, diagnose and suggest a fix rather than just reporting the error
 - If two devices can reach each other via SSH, use transfer_file for large or binary file moves
+- Device commands have a 60s default timeout. For slow operations (builds, package installs, invoking other LLM CLIs, large downloads), pass timeout_seconds explicitly — up to 300
 ${extra ? `\n${extra}` : ""}`;
 }
 

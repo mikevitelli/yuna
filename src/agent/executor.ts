@@ -16,7 +16,7 @@ const MAX_OUTPUT_CHARS = 8000;
 export async function executeBash(
   command: string,
   workingDirectory?: string,
-  timeoutSeconds: number = 30
+  timeoutSeconds: number = 60
 ): Promise<ExecutionResult> {
   const cwd = workingDirectory || homedir();
 
@@ -118,7 +118,7 @@ export async function executeCommand(
         ? input.working_directory
         : undefined;
     const timeout =
-      typeof input.timeout_seconds === "number" ? input.timeout_seconds : 30;
+      typeof input.timeout_seconds === "number" ? input.timeout_seconds : 60;
     return executeBash(cmd, cwd, timeout);
   }
 
