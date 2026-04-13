@@ -20,7 +20,9 @@
     "build": "tsup && cd server && npm run build",
     "build:cli": "tsup",
     "build:server": "cd server && npm run build",
+    "build:landing": "cd landing && npm run build",
     "dev": "cd server && npm run dev",
+    "dev:landing": "cd landing && npm run dev",
     "typecheck": "tsc --noEmit && cd server && npx tsc --noEmit",
     "prepublishOnly": "npm run build:cli"
   },

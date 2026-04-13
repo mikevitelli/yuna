@@ -7,6 +7,9 @@ tsup.config.ts
 .yuna-deploy/
 .yuna-deploy-*/
 
+# Marketing site (deployed separately to yuna.bot, not part of the CLI package)
+landing/
+
 # Server build/dev junk (we ship server/src/ and server/package.json only)
 server/node_modules/
 server/.next/
