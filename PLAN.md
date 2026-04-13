@@ -5,9 +5,10 @@
 Yuna is a self-hosted distributable version of Shiny Politoed. npm CLI + Vercel server lets anyone run their own AI-powered Telegram orchestrator across multiple devices. Per-device tokens, dynamic N devices, optional mesh networking.
 
 - **Repo**: github.com/mikevitelli/yuna
-- **npm**: `yuna-bot` (not yet published)
+- **npm**: [`yuna-bot@0.1.0`](https://www.npmjs.com/package/yuna-bot) — published 2026-04-13
 - **Domain**: yuna.bot (not yet connected)
 - **Platform**: Claude Haiku + Vercel + Upstash Redis + Telegram
+- **First live deployment**: Luigi (@Luigi_041226_bot → https://luigi-eta.vercel.app), running for mikevitelli's uConsole
 
 ---
 
@@ -54,9 +55,31 @@ Yuna is a self-hosted distributable version of Shiny Politoed. npm CLI + Vercel 
 
 ## 🔲 Remaining work
 
-### Phase 1: End-to-end test (highest priority)
+### ✅ Phase 1: End-to-end test — DONE (2026-04-13)
 
-Goal: prove the full pipeline works with a real deploy before publishing.
+Proven live against @Luigi_041226_bot / luigi-eta.vercel.app:
+
+- Wizard ran end-to-end with pre-flight checks + resume file (we hit multiple
+  failure modes and recovered cleanly without re-entering secrets).
+- Device registration via `/create-code` → `yuna add-device --code` → token
+  issued → `~/.config/yuna/device.json` written.
+- Agent polled `/api/relay/poll`, received commands, executed them, and posted
+  results to `/api/relay/respond`.
+- Full agentic loop verified: Luigi answered `/start`, `/status`, direct
+  questions, and tool-routed commands ("give me system analytics") — chaining
+  across `uptime`, `free`, `df`, `top` on the uConsole.
+- Edge case: server-side Claude invoking device-side `claude` CLI over the
+  relay worked as designed (proved the dispatch is truly transparent — any
+  bash is bash).
+- Timeout bump 30s → 60s shipped after observing exit 124 on nested LLM calls.
+
+Remaining unproven in live test:
+- 🔲 Confirmation gate UX — code shipped, not yet exercised in Telegram.
+  Test by asking Luigi to delete a tmpfile and reacting 👍 / ❌.
+- 🔲 Mesh `transfer_file` — only one device registered.
+- 🔲 Multi-device routing — same reason.
+
+### Phase 1.5: Historical test plan (superseded by actual run)
 
 1. **Create test Vercel project**
    - `cd ~/yuna && node bin/yuna.js init`
@@ -95,25 +118,30 @@ Goal: prove the full pipeline works with a real deploy before publishing.
 
 ### Phase 3: Distribution polish
 
-1. **Landing page**
-   - `server/src/app/page.tsx` — currently generic, add a marketing-quality page
-   - Logo (not Politoed — generic/abstract), architecture diagram, install command, docs link
-   - Optional: separate repo `mikevitelli/yuna-landing` deployed to `www.yuna.bot`
+- ✅ **README.md** — rewritten in shiny-politoed style (badges, mermaid sequence /
+  architecture / dataflow diagrams, feature table, cost table, Redis schema,
+  security section, full project layout). Landed 2026-04-12.
+- 🔲 **Landing page** — `server/src/app/page.tsx` still generic. Needs
+  marketing-quality layout (logo, architecture diagram, install command, docs
+  link). Optional split to `mikevitelli/yuna-landing` deployed at
+  `www.yuna.bot`. Not blocking anything — deferred to v0.2.
+- 🔲 **Docs site** — README + CLAUDE.md is enough for v0.1. Revisit if external
+  contributors start landing.
 
-2. **README.md** — rewrite for npm/GitHub audience:
-   - Quick install: `npm install -g yuna-bot && yuna init`
-   - Architecture explanation
-   - Self-hosted benefits (no data shared, bring your own API keys)
-   - Link to landing page + docs
+### ✅ Phase 4: npm publish — DONE (2026-04-13)
 
-3. **Docs site** (optional, README + CLAUDE.md is enough for v0.1)
-
-### Phase 4: npm publish
-
-1. Connect `yuna.bot` custom domain to the Vercel landing page (optional)
-2. `npm login` (if not already)
-3. `npm publish --access public`
-4. Test install from a fresh machine: `npm install -g yuna-bot && yuna init`
+- ✅ npm login via granular access token scoped to `yuna-bot` (2FA bypass,
+  90-day expiry, installed to `~/.npmrc` chmod 600)
+- ✅ `npm publish --access public` → `yuna-bot@0.1.0` live at
+  https://www.npmjs.com/package/yuna-bot
+- ✅ Smoke test from a fresh tmpdir: `npx -y yuna-bot@0.1.0 --help` downloads
+  from the registry and runs cleanly, printing all 8 commands
+- ✅ Tarball sanity: 36 files, 64 kB packed, 238 kB unpacked (down from the
+  10,244-file bloat caught by a last-minute `npm pack --dry-run` — see the
+  `fix(publish): narrow files whitelist` commit)
+- 🔲 Connect `yuna.bot` custom domain to the Vercel landing page — deferred
+- 🔲 v0.1.1 patch release once confirmation gate has been exercised end-to-end
+  in Telegram (the code is live, the UX is unverified)
 
 ### Phase 4.5: Wizard UX polish (from first real run, 2026-04-12)
 
