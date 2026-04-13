@@ -1,56 +1,159 @@
+import { spawn } from "child_process";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
+import { homedir } from "os";
 import type { WireCommand } from "../shared/types.js";
 
-/** Result from executing a tool command */
 export interface ExecutionResult {
   output: string;
   exitCode: number;
 }
 
-/**
- * TODO: Execute a bash command with timeout.
- * Spawns a child process, captures stdout+stderr, enforces timeout.
- * Returns exit code 124 on timeout (matching Unix convention).
- */
+const MAX_OUTPUT_CHARS = 8000;
+
+// ─── Bash execution ──────────────────────────────────────────────────────────
+
 export async function executeBash(
-  _command: string,
-  _workingDirectory?: string,
-  _timeoutSeconds?: number
+  command: string,
+  workingDirectory?: string,
+  timeoutSeconds: number = 30
 ): Promise<ExecutionResult> {
-  // TODO: use child_process.spawn with timeout
-  // Kill process tree on timeout, return exit code 124
-  throw new Error("TODO: implement executeBash");
+  const cwd = workingDirectory || homedir();
+
+  return new Promise((resolve) => {
+    let output = "";
+    let exitCode = 0;
+    let timedOut = false;
+
+    const child = spawn("bash", ["-c", command], { cwd });
+
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutSeconds * 1000);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        exitCode = 124;
+        output += `\n[killed: timeout after ${timeoutSeconds}s]`;
+      } else {
+        exitCode = code ?? 1;
+      }
+      resolve({ output: truncate(output), exitCode });
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ output: `[spawn error] ${err.message}`, exitCode: 1 });
+    });
+  });
 }
 
-/**
- * TODO: Read a file and return its contents.
- * Validates path exists, handles encoding, respects size limits.
- */
+// ─── File I/O ────────────────────────────────────────────────────────────────
+
 export async function executeReadFile(
-  _path: string
+  path: string,
+  maxLines?: number
 ): Promise<ExecutionResult> {
-  // TODO: use fs.readFile with utf-8 encoding
-  throw new Error("TODO: implement executeReadFile");
+  try {
+    const content = readFileSync(path, "utf-8");
+    if (maxLines && maxLines > 0) {
+      const lines = content.split("\n").slice(0, maxLines);
+      return { output: truncate(lines.join("\n")), exitCode: 0 };
+    }
+    return { output: truncate(content), exitCode: 0 };
+  } catch (e) {
+    return {
+      output: `read_file error: ${(e as Error).message}`,
+      exitCode: 1,
+    };
+  }
 }
 
-/**
- * TODO: Write content to a file.
- * Creates parent directories if needed.
- */
 export async function executeWriteFile(
-  _path: string,
-  _content: string
+  path: string,
+  content: string
 ): Promise<ExecutionResult> {
-  // TODO: use fs.writeFile, create dirs with fs.mkdir recursive
-  throw new Error("TODO: implement executeWriteFile");
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    return { output: `Written: ${path}`, exitCode: 0 };
+  } catch (e) {
+    return {
+      output: `write_file error: ${(e as Error).message}`,
+      exitCode: 1,
+    };
+  }
 }
 
-/**
- * TODO: Route a WireCommand to the appropriate executor function.
- * Dispatches based on tool name: run_on_*, read_file, write_file.
- */
-export async function executeCommand(
-  _command: WireCommand
+// ─── Mesh transfer ───────────────────────────────────────────────────────────
+
+export async function executeTransferFile(
+  fromPath: string,
+  toPath: string,
+  sshAlias: string
 ): Promise<ExecutionResult> {
-  // TODO: parse tool name, extract input fields, call appropriate executor
-  throw new Error("TODO: implement executeCommand");
+  return executeBash(`scp "${fromPath}" "${sshAlias}:${toPath}"`);
+}
+
+// ─── Dispatch ────────────────────────────────────────────────────────────────
+
+export async function executeCommand(
+  command: WireCommand
+): Promise<ExecutionResult> {
+  const { tool, input } = command;
+
+  if (tool.startsWith("run_on_")) {
+    const cmd = String(input.command || "");
+    const cwd =
+      typeof input.working_directory === "string"
+        ? input.working_directory
+        : undefined;
+    const timeout =
+      typeof input.timeout_seconds === "number" ? input.timeout_seconds : 30;
+    return executeBash(cmd, cwd, timeout);
+  }
+
+  if (tool === "read_file") {
+    const path = String(input.path || "");
+    const maxLines =
+      typeof input.max_lines === "number" ? input.max_lines : undefined;
+    return executeReadFile(path, maxLines);
+  }
+
+  if (tool === "write_file") {
+    const path = String(input.path || "");
+    const content = String(input.content || "");
+    return executeWriteFile(path, content);
+  }
+
+  if (tool === "transfer_file") {
+    const fromPath = String(input.from_path || "");
+    const toPath = String(input.to_path || "");
+    const toDevice = String(input.to_device || "");
+    // SSH alias must be configured in the device's ssh map
+    return executeTransferFile(fromPath, toPath, toDevice);
+  }
+
+  return {
+    output: `Unknown tool: ${tool}`,
+    exitCode: 1,
+  };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function truncate(text: string): string {
+  if (text.length <= MAX_OUTPUT_CHARS) return text;
+  const head = text.slice(0, MAX_OUTPUT_CHARS / 2);
+  const tail = text.slice(-MAX_OUTPUT_CHARS / 2);
+  return `${head}\n\n... (truncated ${text.length} chars) ...\n\n${tail}`;
 }

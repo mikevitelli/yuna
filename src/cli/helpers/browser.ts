@@ -1,13 +1,9 @@
-/**
- * Cross-platform browser helpers.
- * Used by `yuna init` to open setup URLs (BotFather, Anthropic console, Upstash).
- */
+import open from "open";
 
-/**
- * TODO: Open a URL in the user's default browser.
- * Uses the `open` npm package for cross-platform support.
- */
-export async function openInBrowser(_url: string): Promise<void> {
-  // TODO: import('open') and call default export
-  throw new Error("TODO: implement openInBrowser");
+export async function openInBrowser(url: string): Promise<void> {
+  try {
+    await open(url);
+  } catch {
+    // Headless or no browser — fail silently, caller should print URL
+  }
 }

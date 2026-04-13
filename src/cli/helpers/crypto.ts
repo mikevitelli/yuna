@@ -1,31 +1,21 @@
-/**
- * Cryptographic helpers for secret generation and hashing.
- */
+import { randomBytes, createHash } from "crypto";
 
-/**
- * TODO: Generate a cryptographically secure random secret.
- * Used for MASTER_SECRET and TELEGRAM_WEBHOOK_SECRET.
- * Returns a hex string (e.g. 64 chars = 32 bytes).
- */
-export function generateSecret(_bytes?: number): string {
-  // TODO: use crypto.randomBytes
-  throw new Error("TODO: implement generateSecret");
+export function generateSecret(bytes: number = 32): string {
+  return randomBytes(bytes).toString("hex");
 }
 
-/**
- * TODO: Generate a one-time setup code in XXXX-XXXX format.
- * Alphanumeric uppercase, e.g. "ABCD-1234".
- */
 export function generateSetupCode(): string {
-  // TODO: use crypto.randomBytes, encode as alphanumeric uppercase
-  throw new Error("TODO: implement generateSetupCode");
+  // 4+4 alphanumeric, no ambiguous chars (0/O/I/1)
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const buf = randomBytes(8);
+  let code = "";
+  for (let i = 0; i < 8; i++) {
+    code += chars[buf[i] % chars.length];
+    if (i === 3) code += "-";
+  }
+  return code;
 }
 
-/**
- * TODO: Hash a secret using SHA-256 for storage.
- * The master secret is stored hashed in Redis.
- */
-export function hashSecret(_secret: string): string {
-  // TODO: use crypto.createHash('sha256')
-  throw new Error("TODO: implement hashSecret");
+export function hashSecret(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
 }

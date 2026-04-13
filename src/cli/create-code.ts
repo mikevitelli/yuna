@@ -1,20 +1,27 @@
 import type { Command } from "commander";
+import chalk from "chalk";
+import { loadConfig } from "./helpers/config.js";
 
-/**
- * `yuna create-code` — Generate a one-time setup code for adding devices.
- *
- * TODO: Implement:
- * 1. Load ~/.config/yuna/config.json (requires admin access / master secret)
- * 2. POST to server to create a setup code in Redis (10min TTL, single-use)
- * 3. Display the code: "Setup code: ABCD-1234 (expires in 10 minutes)"
- * 4. The code format is XXXX-XXXX (alphanumeric uppercase)
- */
 export function registerCreateCode(program: Command): void {
   program
     .command("create-code")
-    .description("Generate one-time setup code for adding devices")
-    .action(async () => {
-      // TODO: implement setup code generation
-      throw new Error("TODO: implement create-code command");
-    });
+    .description("Get instructions for generating a device setup code")
+    .action(runCreateCode);
+}
+
+async function runCreateCode(): Promise<void> {
+  const config = loadConfig();
+  if (!config) {
+    console.error(chalk.red("No Yuna admin config found. Run `yuna init` first."));
+    process.exit(1);
+  }
+
+  console.log(chalk.yellow("Setup codes are generated via Telegram:"));
+  console.log(`  1. Send ${chalk.bold("/create-code")} to your bot`);
+  console.log(`  2. Copy the code from the response`);
+  console.log(
+    `  3. Run ${chalk.bold("yuna add-device --code <code>")} on the new device`
+  );
+  console.log("");
+  console.log(chalk.dim(`Server: ${config.serverUrl}`));
 }

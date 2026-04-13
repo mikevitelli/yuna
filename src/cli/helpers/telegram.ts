@@ -1,42 +1,51 @@
-/**
- * Telegram Bot API helpers for CLI setup.
- */
-
 interface TelegramBotInfo {
   id: number;
   username: string;
   firstName: string;
 }
 
-/**
- * TODO: Validate a Telegram bot token by calling the getMe API.
- * Returns bot info if valid, null if invalid.
- */
 export async function validateBotToken(
-  _token: string
+  token: string
 ): Promise<TelegramBotInfo | null> {
-  // TODO: fetch https://api.telegram.org/bot{token}/getMe
-  throw new Error("TODO: implement validateBotToken");
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await res.json();
+    if (!data.ok) return null;
+    return {
+      id: data.result.id,
+      username: data.result.username,
+      firstName: data.result.first_name,
+    };
+  } catch {
+    return null;
+  }
 }
 
-/**
- * TODO: Register a webhook URL for the Telegram bot.
- * Called after server deployment to point Telegram at the server's webhook endpoint.
- */
 export async function setWebhook(
-  _botToken: string,
-  _webhookUrl: string,
-  _webhookSecret: string
+  botToken: string,
+  webhookUrl: string,
+  webhookSecret: string
 ): Promise<boolean> {
-  // TODO: POST to https://api.telegram.org/bot{token}/setWebhook
-  // with url and secret_token parameters
-  throw new Error("TODO: implement setWebhook");
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${botToken}/setWebhook`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: webhookUrl,
+          secret_token: webhookSecret,
+          allowed_updates: ["message", "message_reaction"],
+        }),
+      }
+    );
+    const data = await res.json();
+    return data.ok === true;
+  } catch {
+    return false;
+  }
 }
 
-/**
- * TODO: Validate that a Telegram user ID looks correct (numeric string).
- */
-export function validateUserId(_userId: string): boolean {
-  // TODO: check format — should be a positive integer
-  throw new Error("TODO: implement validateUserId");
+export function validateUserId(userId: string): boolean {
+  return /^\d+$/.test(userId.trim());
 }
